@@ -1,0 +1,253 @@
+---
+title: "STAT6011 Assignment 1"
+author: "Yu Boyang / ID: 3030144197"
+output:
+  pdf_document:
+    keep_tex: false
+  html_document:
+    toc: true
+    toc_depth: 2
+fontsize: 11pt
+geometry: margin=0.85in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 6.5, fig.height = 4,
+                      fig.align = "center")
+options(digits = 5, width = 78)
+options(knitr.table.format = if (knitr::is_latex_output()) "latex" else "pipe")
+```
+
+# Question 1
+
+## (a)
+
+```{r q1-sim}
+set.seed(6001)
+x <- rnorm(10000)
+y <- x^2
+hist(y, breaks = 100, probability = TRUE, col = "#e9bb8a",
+     main = "Squared standard normal samples", xlab = "y")
+curve(dchisq(x, df = 1), from = 0.0001, to = max(y),
+      add = TRUE, col = "red", lwd = 2)
+legend("topright", "chisq(x, df = 1)", col = "red", lwd = 2, bty = "n")
+```
+
+The histogram is very similar and very close to the chi-squared(df=1) density. 
+
+## (b)
+
+Use a one-sample Kolmogorov--Smirnov test with
+$H_0:Y\sim\chi^2_1$.
+
+```{r q1-test}
+ks <- ks.test(y, "pchisq", df = 1)
+ks
+```
+
+At the 5% level,  `r if (ks$p.value > .05) "do not reject" else "reject"`
+$H_0$ (p-value = `r round(ks$p.value, 4)`).  
+
+# Question 2
+
+## (a)
+
+```{r uniform}
+h <- function(x) (cos(50*x) + sin(20*x))^2
+set.seed(6001)
+n <- 10000
+u <- runif(n)
+mc <- mean(h(u))
+mc.se <- sd(h(u))/sqrt(n)
+c(estimate = mc, MCSE = mc.se)
+```
+
+## (b)
+
+For $U_i\sim\mathrm{Beta}(\alpha,\beta)$,
+\[
+\widehat I=\frac1n\sum_i\frac{h(U_i)}{f(U_i)},\qquad
+\operatorname{Var}(\widehat I)=\frac1n\left[
+\int_0^1\frac{h(x)^2}{f(x)}dx-I^2\right].
+\]
+Minimize $\int_0^1h(x)^2/f(x)dx$ over $0<\alpha,\beta<2$.
+
+```{r optimize}
+second.moment <- function(ab) {
+  integrate(function(x) h(x)^2/dbeta(x, ab[1], ab[2]),
+            0, 1, subdivisions = 1000)$value
+}
+opt <- optim(c(1, 1), second.moment, method = "L-BFGS-B",
+             lower = c(.01, .01), upper = c(1.99, 1.99))
+ab <- opt$par
+names(ab) <- c("alpha", "beta")
+ab
+set.seed(6001)
+u.beta <- rbeta(n, ab[1], ab[2])
+z <- h(u.beta)/dbeta(u.beta, ab[1], ab[2])
+is <- mean(z)
+is.se <- sd(z)/sqrt(n)
+c(estimate = is, MCSE = is.se)
+```
+
+The optimal values are $\alpha\approx `r round(ab[1],4)`$ and
+$\beta\approx `r round(ab[2],4)`$.
+
+## (c)
+
+Use Gauss--Legendre quadrature with $x=(t+1)/2$:
+\[
+I\approx\frac12\sum_k w_kh((t_k+1)/2).
+\]
+
+```{r quadrature}
+gauss.int <- function(m) {
+  g <- statmod::gauss.quad(m, kind = "legendre")
+  sum(g$weights*h((g$nodes + 1)/2))/2
+}
+benchmark <- gauss.int(128)
+benchmark
+comparison <- data.frame(
+  method = c("Uniform MC", "Beta importance sampling", "Gauss-Legendre"),
+  estimate = c(mc, is, benchmark),
+  MCSE = c(mc.se, is.se, NA))
+comparison$absolute.error <- abs(comparison$estimate - benchmark)
+knitr::kable(longtable = FALSE, comparison, digits = 7)
+var.uniform <- second.moment(c(1, 1)) - benchmark^2
+var.beta <- second.moment(ab) - benchmark^2
+c(variance.ratio = var.beta/var.uniform,
+  variance.reduction = 1 - var.beta/var.uniform)
+```
+
+The integral is about `r round(benchmark,6)`. The Beta proposal reduces
+variance by about `r round(100*(1-var.beta/var.uniform),2)`%.
+
+# Question 3
+
+## (a)
+
+```{r q3-mle}
+d <- read.csv("Q3.csv", row.names = 1)
+fit <- lm(y ~ ., data = d)
+X <- model.matrix(fit)
+y3 <- d$y
+n3 <- nrow(X)
+p <- ncol(X)
+bhat <- coef(fit)
+S <- sum(resid(fit)^2)
+vhat <- S/n3
+log.Lmax <- -n3/2*(log(2*pi*vhat) + 1)
+c(sigma2.MLE = vhat, log.Lmax = log.Lmax)
+```
+
+Use $\widehat\beta=(X^TX)^{-1}X^Ty$ and $\widehat\sigma^2=S/n$.
+Accept a prior sample with probability $L(\beta,\sigma^2)/L(\widehat\beta,\widehat\sigma^2)$.
+
+```{r q3-prior-sampler}
+prior.reject <- function(prior) {
+  accepted <- 0
+  for (i in 1:100) {
+    if (prior == "normal") {
+      b <- matrix(rnorm(10000*p, sd = 5), nrow = 10000)
+    } else {
+      b <- matrix(rexp(10000*p)*sample(c(-1, 1), 10000*p, TRUE),
+                  nrow = 10000)
+    }
+    v <- 1/rgamma(10000, .1, rate = .1)
+    rss <- colSums((y3 - X %*% t(b))^2)
+    log.a <- n3/2*(log(vhat/v) + 1) - rss/(2*v)
+    accepted <- accepted + sum(log(runif(10000)) <= log.a)
+  }
+  accepted
+}
+```
+
+```{r q3-normal}
+set.seed(6001)
+prior.reject("normal")
+```
+
+So tried 1,000,000 proposals but got no accepted samples, just like the student on moodle stated.
+
+## (b)
+
+```{r q3-laplace}
+prior.reject("laplace")
+```
+
+The Laplace prior also gave no accepted samples after 1,000,000 proposals,
+so could not compare their efficiency from these runs.
+
+## (c)
+
+Fit ridge and Lasso using 10-fold cross-validation.
+
+```{r q3-cv}
+set.seed(6001)
+fold <- sample(rep(1:10, length.out = n3))
+x3 <- as.matrix(d[, paste0("x", 1:10)])
+cv.ridge <- glmnet::cv.glmnet(x3, y3, alpha = 0, foldid = fold)
+cv.lasso <- glmnet::cv.glmnet(x3, y3, alpha = 1, foldid = fold)
+knitr::kable(longtable = FALSE, data.frame(parameter = c("beta0", paste0("beta", 1:10)),
+  MLE = bhat,
+  Ridge.CV = as.numeric(coef(cv.ridge, s = "lambda.min")),
+  Lasso.CV = as.numeric(coef(cv.lasso, s = "lambda.min"))),
+  digits = 4, row.names = FALSE)
+c(ridge.lambda = cv.ridge$lambda.min, lasso.lambda = cv.lasso$lambda.min)
+```
+
+Ridge shrinks the coefficients, while Lasso sets some coefficients to zero.
+
+# Question 4
+
+## (a)
+
+For $\mu\sim N(m,4)$,
+\[
+p(\mu\mid y)\propto\exp\left[-\frac12\left\{
+\sum_i(y_i-\mu)^2+\frac{(\mu-m)^2}{4}\right\}\right].
+\]
+Completing the square,
+\[
+\mu\mid y\sim N\left(\frac{n\bar y+m/4}{n+1/4},\frac1{n+1/4}\right).
+\]
+Set $m=0$ for the given prior.
+
+```{r q4-posterior}
+y4 <- read.csv("Q4.csv", row.names = 1)$y
+n4 <- length(y4)
+ybar <- mean(y4)
+post.var <- 1/(n4 + 1/4)
+c(MLE = ybar, posterior.mean = n4*ybar*post.var,
+  posterior.variance = post.var)
+```
+
+## (b)
+
+The mean update is
+\[
+m_{j+1}=\frac{n\bar y+m_j/4}{n+1/4},\qquad
+m_{j+1}-\bar y=\frac{m_j-\bar y}{4n+1}.
+\]
+Thus the fixed point is $\bar y$.
+Use 1000 samples per iteration and stop when the mean changes by less than 0.01.
+
+```{r q4-ppmm}
+set.seed(6001)
+m <- 0
+trace <- m
+for (j in 1:100) {
+  post.mean <- (n4*ybar + m/4)*post.var
+  draws <- rnorm(1000, post.mean, sqrt(post.var))
+  m.new <- mean(draws)
+  change <- abs(m.new - m)
+  m <- m.new
+  trace <- c(trace, m)
+  if (change < .01) break
+}
+c(PPMM = m, MLE = ybar)
+plot(0:j, trace, type = "b", xlab = "Iteration", ylab = "Mean")
+abline(h = ybar, col = "red", lty = 2)
+```
+
+The PPMM estimate is `r round(m,5)`, and the MLE is `r round(ybar,5)`, saying they are close.

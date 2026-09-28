@@ -1,0 +1,10 @@
+.tools/
+tmp/
+.vscode/
+.Rhistory
+**/.Rhistory
+.RData
+**/.RData
+.Rproj.user/
+**/.DS_Store
+__MACOSX/
